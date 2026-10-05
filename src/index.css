@@ -439,9 +439,25 @@ html, body, #root {
 /* ── 3D Viewport ── */
 .viewport-container {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
   position: relative;
   overflow: hidden;
   background: var(--bg-workspace);
+}
+
+.threed-viewer-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
 }
 
 .viewport-overlay {

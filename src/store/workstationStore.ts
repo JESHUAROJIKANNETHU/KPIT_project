@@ -182,25 +182,42 @@ const setSelectionInTree = (root: AssemblyNode, selectedId: string | null): Asse
   };
 };
 
-// Isolate a specific node (make it and its path visible, hide others)
+// Isolate a specific node (make it, its ancestors, and all of its descendants visible, hide others)
 const isolateInTree = (root: AssemblyNode, isolatedId: string): AssemblyNode => {
-  // A node is visible if it is the isolated node, or an ancestor of the isolated node, or a child of the isolated node
-  const isTargetOrDescendant = (node: AssemblyNode): boolean => {
-    if (node.id === isolatedId) return true;
-    return node.children.some(isTargetOrDescendant);
-  };
-  
-  const mark = (node: AssemblyNode): AssemblyNode => {
-    const isTarget = node.id === isolatedId;
-    const hasTargetInSubtree = isTargetOrDescendant(node);
-    return {
-      ...node,
-      visible: isTarget || hasTargetInSubtree,
-      children: node.children.map(mark),
-    };
+  const activeIds = new Set<string>();
+
+  const collectSubtree = (node: AssemblyNode) => {
+    activeIds.add(node.id);
+    if (node.children) {
+      node.children.forEach(collectSubtree);
+    }
   };
 
-  return mark(root);
+  const findAndMarkPath = (node: AssemblyNode): boolean => {
+    if (node.id === isolatedId) {
+      collectSubtree(node);
+      return true;
+    }
+    if (node.children) {
+      for (const child of node.children) {
+        if (findAndMarkPath(child)) {
+          activeIds.add(node.id);
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  findAndMarkPath(root);
+
+  const applyVisibility = (node: AssemblyNode): AssemblyNode => ({
+    ...node,
+    visible: activeIds.has(node.id),
+    children: node.children ? node.children.map(applyVisibility) : [],
+  });
+
+  return applyVisibility(root);
 };
 
 // Set all nodes visible

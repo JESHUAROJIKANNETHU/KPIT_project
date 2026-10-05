@@ -1,14 +1,15 @@
 // ============================================================
 // 3D Engineering Viewport – Vehicle Digital Twin
-// React Three Fiber + Drei
+// React Three Fiber + Drei with Procedural Component Detailing
 // ============================================================
 
 import React, { useRef, useMemo, useCallback, useEffect, useState } from 'react';
-import { Canvas, useThree, useFrame, ThreeEvent } from '@react-three/fiber';
-import { OrbitControls, Grid, GizmoHelper, GizmoViewport, Environment, ContactShadows, Line } from '@react-three/drei';
+import { Canvas, useThree, ThreeEvent } from '@react-three/fiber';
+import { OrbitControls, Grid, GizmoHelper, GizmoViewport, Environment, ContactShadows, Line, Text } from '@react-three/drei';
 import * as THREE from 'three';
 import { useWorkstationStore, CameraPreset, RenderMode, AnalysisOverlay } from '../store/workstationStore';
 import { AssemblyNode, flattenAssembly } from '../data/vehicleAssembly';
+import ThreeDViewer, { MechanicalObjectType } from './ThreeDViewer';
 
 // ── Camera Controller with Real Fit, Reset & Presets ──
 function CameraController() {
@@ -40,10 +41,9 @@ function CameraController() {
     }
   }, [cameraPreset, camera]);
 
-  // Fit camera to full vehicle model
+  // Fit camera to full vehicle model or visible components
   useEffect(() => {
     if (fitCameraTrigger === 0 || !controlsRef.current) return;
-    // Calculate bounding box of all meshes in scene
     const box = new THREE.Box3();
     scene.traverse((obj) => {
       if ((obj as THREE.Mesh).isMesh && obj.visible) {
@@ -56,10 +56,11 @@ function CameraController() {
       box.getCenter(center);
       const size = new THREE.Vector3();
       box.getSize(size);
-      const maxDim = Math.max(size.x, size.y, size.z);
+      const maxDim = Math.max(size.x, size.y, size.z, 1.2);
       const dist = maxDim * 1.6;
 
       const dir = camera.position.clone().sub(controlsRef.current.target).normalize();
+      if (dir.lengthSq() < 0.001) dir.set(0.7, 0.5, 0.7).normalize();
       camera.position.copy(center).add(dir.multiplyScalar(dist));
       controlsRef.current.target.copy(center);
       controlsRef.current.update();
@@ -79,8 +80,8 @@ function CameraController() {
       ref={controlsRef}
       makeDefault
       target={[0, 0.4, 0]}
-      minDistance={1.2}
-      maxDistance={25}
+      minDistance={0.5}
+      maxDistance={30}
       enableDamping
       dampingFactor={0.07}
       rotateSpeed={0.65}
@@ -90,7 +91,23 @@ function CameraController() {
   );
 }
 
-// ── Geometry Generator for Detailed Vehicle Assembly ──
+// ── Helical Coil Spring Generator for Suspension ──
+function createCoilSpringGeometry(radius = 0.09, height = 0.35, turns = 6, tubeRadius = 0.012): THREE.BufferGeometry {
+  const points: THREE.Vector3[] = [];
+  const samples = 120;
+  for (let i = 0; i <= samples; i++) {
+    const t = i / samples;
+    const angle = t * turns * Math.PI * 2;
+    const x = radius * Math.cos(angle);
+    const z = radius * Math.sin(angle);
+    const y = (t - 0.5) * height;
+    points.push(new THREE.Vector3(x, y, z));
+  }
+  const path = new THREE.CatmullRomCurve3(points);
+  return new THREE.TubeGeometry(path, 80, tubeRadius, 10, false);
+}
+
+// ── Geometry Generator for Main Component Shells ──
 function createComponentGeometry(node: AssemblyNode): THREE.BufferGeometry {
   const id = node.id;
 
@@ -99,7 +116,7 @@ function createComponentGeometry(node: AssemblyNode): THREE.BufferGeometry {
     return new THREE.CylinderGeometry(0.33, 0.33, 0.23, 32);
   }
 
-  // Engine Block: Subdivided box with cylinder indentations
+  // Engine Block
   if (id === 'engine-block') {
     return new THREE.BoxGeometry(0.48, 0.38, 0.42);
   }
@@ -114,7 +131,7 @@ function createComponentGeometry(node: AssemblyNode): THREE.BufferGeometry {
     return new THREE.BoxGeometry(0.28, 0.18, 0.24);
   }
 
-  // Exhaust manifold & pipe
+  // Exhaust manifold
   if (id === 'engine-exhaust') {
     return new THREE.CylinderGeometry(0.045, 0.06, 0.95, 16);
   }
@@ -134,7 +151,7 @@ function createComponentGeometry(node: AssemblyNode): THREE.BufferGeometry {
     return new THREE.CylinderGeometry(0.065, 0.065, 0.12, 16);
   }
 
-  // Transmission casing
+  // Transmission / Gearbox casing
   if (id === 'transmission') {
     return new THREE.BoxGeometry(0.42, 0.32, 0.54);
   }
@@ -154,7 +171,7 @@ function createComponentGeometry(node: AssemblyNode): THREE.BufferGeometry {
     return new THREE.BoxGeometry(1.72, 0.1, 4.15);
   }
 
-  // Front suspension crossmember & wishbones
+  // Front suspension wishbones / crossmember
   if (id === 'suspension-front') {
     return new THREE.BoxGeometry(1.55, 0.14, 0.32);
   }
@@ -164,7 +181,7 @@ function createComponentGeometry(node: AssemblyNode): THREE.BufferGeometry {
     return new THREE.BoxGeometry(1.55, 0.14, 0.32);
   }
 
-  // Brakes: Ventilated Rotor
+  // Brakes: Ventilated Rotor Disc
   if (id === 'braking-disc') {
     return new THREE.CylinderGeometry(0.145, 0.145, 0.026, 24);
   }
@@ -179,9 +196,14 @@ function createComponentGeometry(node: AssemblyNode): THREE.BufferGeometry {
     return new THREE.BoxGeometry(0.14, 0.1, 0.12);
   }
 
-  // High Voltage Battery Pack
+  // Battery Pack
   if (id === 'electrical-battery') {
-    return new THREE.BoxGeometry(1.2, 0.18, 1.8);
+    return new THREE.BoxGeometry(0.38, 0.22, 0.26);
+  }
+
+  // Alternator
+  if (id === 'electrical-alternator') {
+    return new THREE.CylinderGeometry(0.09, 0.09, 0.16, 24);
   }
 
   // ECU / Power Electronics
@@ -193,7 +215,7 @@ function createComponentGeometry(node: AssemblyNode): THREE.BufferGeometry {
   return new THREE.BoxGeometry(0.35, 0.35, 0.35);
 }
 
-// ── Individual CAD Component Mesh ──
+// ── Detailed Procedural Component Mesh Decorator ──
 function ComponentMesh({
   node,
   explodeAmount,
@@ -246,7 +268,7 @@ function ComponentMesh({
     return new THREE.Plane(normals[sectionAxis], -sectionPosition * 2.5);
   }, [sectionEnabled, sectionAxis, sectionPosition]);
 
-  // Geometry
+  // Base Geometry
   const geometry = useMemo(() => createComponentGeometry(node), [node]);
 
   // Material Color Calculation
@@ -284,7 +306,7 @@ function ComponentMesh({
     return node.color;
   }, [node.color, isSelected, isHovered, analysisOverlay, node.parameters, node.id]);
 
-  // Rotation for specific parts (wheels, discs, fans)
+  // Rotation for specific parts (wheels, discs, fans, coils)
   const rotation = useMemo((): [number, number, number] => {
     if (node.id.startsWith('wheel-') || node.id.startsWith('braking-disc')) {
       const isLeft = node.id.includes('-fl') || node.id.includes('-rl');
@@ -293,14 +315,16 @@ function ComponentMesh({
     if (node.id === 'cooling-fan') {
       return [Math.PI / 2, 0, 0];
     }
+    if (node.id === 'electrical-alternator') {
+      return [0, 0, Math.PI / 2];
+    }
     return [0, 0, 0];
   }, [node.id]);
 
-  // Handle pointer interactions (select, measure, context menu)
+  // Pointer interaction
   const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation();
     if (activeTool === 'measure') {
-      // Raycast point in world space
       addMeasurePoint([e.point.x, e.point.y, e.point.z]);
     } else {
       selectNode(node.id);
@@ -315,56 +339,210 @@ function ComponentMesh({
 
   if (!node.visible) return null;
 
-  // Exterior body shell semi-transparency in Solid mode to allow visibility of internal mechanics
+  // Semi-transparency for body shell in solid render mode
   const isBodyShell = node.id === 'body-exterior';
   const effectiveOpacity = renderMode === 'xray'
     ? (isSelected ? 0.6 : 0.22)
     : isBodyShell
-    ? 0.42
+    ? 0.38
     : 1.0;
 
   const isTransparent = renderMode === 'xray' || isBodyShell;
 
   return (
-    <mesh
-      ref={meshRef}
-      position={[finalPos.x, finalPos.y, finalPos.z]}
-      rotation={rotation}
-      geometry={geometry}
-      onClick={handleClick}
-      onContextMenu={handleContextMenu}
-      onPointerOver={(e) => {
-        e.stopPropagation();
-        hoverNode(node.id);
-        document.body.style.cursor = activeTool === 'measure' ? 'crosshair' : 'pointer';
-      }}
-      onPointerOut={() => {
-        hoverNode(null);
-        document.body.style.cursor = 'default';
-      }}
-    >
-      {renderMode === 'wireframe' ? (
-        <meshBasicMaterial
-          color={color}
-          wireframe
-          clippingPlanes={clippingPlane ? [clippingPlane] : []}
-          clipShadows
-        />
-      ) : (
-        <meshStandardMaterial
-          color={color}
-          roughness={isSelected ? 0.25 : 0.45}
-          metalness={isSelected ? 0.7 : 0.4}
-          emissive={isSelected ? '#1e5a9c' : isHovered ? '#0e3056' : '#000000'}
-          emissiveIntensity={isSelected ? 0.65 : isHovered ? 0.35 : 0}
-          transparent={isTransparent}
-          opacity={effectiveOpacity}
-          clippingPlanes={clippingPlane ? [clippingPlane] : []}
-          clipShadows
-          side={isTransparent ? THREE.DoubleSide : THREE.FrontSide}
-        />
+    <group position={[finalPos.x, finalPos.y, finalPos.z]} rotation={rotation}>
+      {/* Primary Component Mesh */}
+      <mesh
+        ref={meshRef}
+        geometry={geometry}
+        onClick={handleClick}
+        onContextMenu={handleContextMenu}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          hoverNode(node.id);
+          document.body.style.cursor = activeTool === 'measure' ? 'crosshair' : 'pointer';
+        }}
+        onPointerOut={() => {
+          hoverNode(null);
+          document.body.style.cursor = 'default';
+        }}
+      >
+        {renderMode === 'wireframe' ? (
+          <meshBasicMaterial
+            color={color}
+            wireframe
+            clippingPlanes={clippingPlane ? [clippingPlane] : []}
+            clipShadows
+          />
+        ) : (
+          <meshStandardMaterial
+            color={color}
+            roughness={isSelected ? 0.25 : 0.42}
+            metalness={isSelected ? 0.75 : 0.45}
+            emissive={isSelected ? '#1e5a9c' : isHovered ? '#0e3056' : '#000000'}
+            emissiveIntensity={isSelected ? 0.65 : isHovered ? 0.35 : 0}
+            transparent={isTransparent}
+            opacity={effectiveOpacity}
+            clippingPlanes={clippingPlane ? [clippingPlane] : []}
+            clipShadows
+            side={isTransparent ? THREE.DoubleSide : THREE.FrontSide}
+          />
+        )}
+      </mesh>
+
+      {/* ── Sub-component Procedural Details ── */}
+      {renderMode !== 'wireframe' && (
+        <>
+          {/* BATTERY DETAILS (Terminals + Filler Caps) */}
+          {node.id === 'electrical-battery' && (
+            <group>
+              {/* Positive Terminal (Red) */}
+              <mesh position={[0.12, 0.13, 0.08]}>
+                <cylinderGeometry args={[0.02, 0.022, 0.05, 16]} />
+                <meshStandardMaterial color="#e74c3c" metalness={0.8} roughness={0.3} />
+              </mesh>
+              {/* Negative Terminal (Blue/Black) */}
+              <mesh position={[-0.12, 0.13, 0.08]}>
+                <cylinderGeometry args={[0.02, 0.022, 0.05, 16]} />
+                <meshStandardMaterial color="#2980b9" metalness={0.8} roughness={0.3} />
+              </mesh>
+              {/* Top Cell Caps Strip */}
+              <mesh position={[0, 0.115, -0.04]}>
+                <boxGeometry args={[0.3, 0.015, 0.08]} />
+                <meshStandardMaterial color="#111115" metalness={0.2} roughness={0.6} />
+              </mesh>
+            </group>
+          )}
+
+          {/* ALTERNATOR DETAILS (Pulley + Stator Fins + Copper Winding Core) */}
+          {node.id === 'electrical-alternator' && (
+            <group>
+              {/* Front Belt Drive Pulley Wheel */}
+              <mesh position={[0, 0.09, 0]}>
+                <cylinderGeometry args={[0.055, 0.055, 0.025, 24]} />
+                <meshStandardMaterial color="#2c3e50" metalness={0.9} roughness={0.2} />
+              </mesh>
+              {/* Copper Winding Core Inside Vents */}
+              <mesh position={[0, 0, 0]}>
+                <cylinderGeometry args={[0.075, 0.075, 0.1, 16]} />
+                <meshStandardMaterial color="#d35400" metalness={0.85} roughness={0.25} />
+              </mesh>
+            </group>
+          )}
+
+          {/* RADIATOR DETAILS (Fine Grill Texture Core + Hose Ports) */}
+          {node.id === 'cooling-radiator' && (
+            <group>
+              {/* Radiator Cap (Shiny Metallic Silver) */}
+              <mesh position={[0.28, 0.23, 0]}>
+                <cylinderGeometry args={[0.03, 0.03, 0.02, 16]} />
+                <meshStandardMaterial color="#bdc3c7" metalness={0.95} roughness={0.1} />
+              </mesh>
+              {/* Upper & Lower Coolant Hoses */}
+              <mesh position={[-0.26, 0.18, 0.04]} rotation={[0, 0, Math.PI / 2]}>
+                <cylinderGeometry args={[0.022, 0.022, 0.1, 16]} />
+                <meshStandardMaterial color="#111115" roughness={0.8} />
+              </mesh>
+            </group>
+          )}
+
+          {/* RADIATOR FAN DETAILS (6 Blade Rotor) */}
+          {node.id === 'cooling-fan' && (
+            <group>
+              {/* Center Electric Motor Hub */}
+              <mesh position={[0, 0.025, 0]}>
+                <cylinderGeometry args={[0.06, 0.06, 0.03, 16]} />
+                <meshStandardMaterial color="#1a252f" metalness={0.8} />
+              </mesh>
+            </group>
+          )}
+
+          {/* ENGINE BLOCK DETAILS (Crank Pulley + Oil Pan) */}
+          {node.id === 'engine-block' && (
+            <group>
+              {/* Front Harmonic Balancer Crank Pulley */}
+              <mesh position={[0, -0.05, 0.23]}>
+                <cylinderGeometry args={[0.09, 0.09, 0.04, 24]} />
+                <meshStandardMaterial color="#34495e" metalness={0.85} roughness={0.3} />
+              </mesh>
+              {/* Oil Sump Pan */}
+              <mesh position={[0, -0.22, 0]}>
+                <boxGeometry args={[0.44, 0.08, 0.38]} />
+                <meshStandardMaterial color="#1c2833" metalness={0.9} roughness={0.2} />
+              </mesh>
+            </group>
+          )}
+
+          {/* TRANSMISSION DETAILS (Bell Housing + Output Shaft Flanges) */}
+          {node.id === 'transmission' && (
+            <group>
+              {/* Front Engine Bell Housing Adapter */}
+              <mesh position={[0, 0, 0.24]}>
+                <cylinderGeometry args={[0.22, 0.18, 0.1, 24]} />
+                <meshStandardMaterial color="#7f8c8d" metalness={0.8} roughness={0.3} />
+              </mesh>
+              {/* Left Output Driveshaft Stub */}
+              <mesh position={[-0.23, -0.05, -0.05]} rotation={[0, 0, Math.PI / 2]}>
+                <cylinderGeometry args={[0.04, 0.04, 0.08, 16]} />
+                <meshStandardMaterial color="#2c3e50" metalness={0.9} />
+              </mesh>
+              {/* Right Output Driveshaft Stub */}
+              <mesh position={[0.23, -0.05, -0.05]} rotation={[0, 0, Math.PI / 2]}>
+                <cylinderGeometry args={[0.04, 0.04, 0.08, 16]} />
+                <meshStandardMaterial color="#2c3e50" metalness={0.9} />
+              </mesh>
+            </group>
+          )}
+
+          {/* SUSPENSION DETAILS (Real 3D Coil Springs) */}
+          {node.id === 'suspension-front' && (
+            <group>
+              {/* Left MacPherson Coil Spring */}
+              <mesh position={[-0.65, 0.12, 0]} geometry={createCoilSpringGeometry(0.085, 0.28, 6, 0.012)}>
+                <meshStandardMaterial color="#e74c3c" metalness={0.7} roughness={0.3} />
+              </mesh>
+              {/* Right MacPherson Coil Spring */}
+              <mesh position={[0.65, 0.12, 0]} geometry={createCoilSpringGeometry(0.085, 0.28, 6, 0.012)}>
+                <meshStandardMaterial color="#e74c3c" metalness={0.7} roughness={0.3} />
+              </mesh>
+              {/* Left Shock Damper Rod */}
+              <mesh position={[-0.65, 0.12, 0]}>
+                <cylinderGeometry args={[0.025, 0.025, 0.32, 16]} />
+                <meshStandardMaterial color="#ecf0f1" metalness={0.95} roughness={0.1} />
+              </mesh>
+              {/* Right Shock Damper Rod */}
+              <mesh position={[0.65, 0.12, 0]}>
+                <cylinderGeometry args={[0.025, 0.025, 0.32, 16]} />
+                <meshStandardMaterial color="#ecf0f1" metalness={0.95} roughness={0.1} />
+              </mesh>
+            </group>
+          )}
+
+          {/* REAR SUSPENSION COIL SPRINGS */}
+          {node.id === 'suspension-rear' && (
+            <group>
+              <mesh position={[-0.65, 0.1, 0]} geometry={createCoilSpringGeometry(0.08, 0.25, 5, 0.011)}>
+                <meshStandardMaterial color="#27ae60" metalness={0.7} roughness={0.3} />
+              </mesh>
+              <mesh position={[0.65, 0.1, 0]} geometry={createCoilSpringGeometry(0.08, 0.25, 5, 0.011)}>
+                <meshStandardMaterial color="#27ae60" metalness={0.7} roughness={0.3} />
+              </mesh>
+            </group>
+          )}
+
+          {/* BRAKE CALIPER & ROTOR DETAILS */}
+          {node.id === 'braking-disc' && (
+            <group>
+              {/* Center Wheel Mounting Hat */}
+              <mesh position={[0, 0.018, 0]}>
+                <cylinderGeometry args={[0.075, 0.075, 0.015, 24]} />
+                <meshStandardMaterial color="#34495e" metalness={0.9} roughness={0.2} />
+              </mesh>
+            </group>
+          )}
+        </>
       )}
-    </mesh>
+    </group>
   );
 }
 
@@ -661,10 +839,25 @@ export default function Viewport3D() {
   const renderMode = useWorkstationStore(s => s.renderMode);
   const activeTool = useWorkstationStore(s => s.activeTool);
   const setCameraPreset = useWorkstationStore(s => s.setCameraPreset);
+  const triggerFitCamera = useWorkstationStore(s => s.triggerFitCamera);
+  const triggerResetCamera = useWorkstationStore(s => s.triggerResetCamera);
+  const resetCameraTrigger = useWorkstationStore(s => s.resetCameraTrigger);
+  const fitCameraTrigger = useWorkstationStore(s => s.fitCameraTrigger);
   const measureData = useWorkstationStore(s => s.measureData);
   const measurePoints = useWorkstationStore(s => s.measurePoints);
   const clearMeasurement = useWorkstationStore(s => s.clearMeasurement);
   const setActiveTool = useWorkstationStore(s => s.setActiveTool);
+  const isolateNode = useWorkstationStore(s => s.isolateNode);
+  const showAllNodes = useWorkstationStore(s => s.showAllNodes);
+  const toggleNodeVisibility = useWorkstationStore(s => s.toggleNodeVisibility);
+  const explodeAmount = useWorkstationStore(s => s.explodeAmount);
+  const setExplodeAmount = useWorkstationStore(s => s.setExplodeAmount);
+  const selectNode = useWorkstationStore(s => s.selectNode);
+  const analysisOverlay = useWorkstationStore(s => s.analysisOverlay);
+  const showGrid = useWorkstationStore(s => s.showGrid);
+  const showAxes = useWorkstationStore(s => s.showAxes);
+
+  const [activeObjectType, setActiveObjectType] = useState<MechanicalObjectType>('full-car');
 
   const flatNodes = useMemo(() => flattenAssembly(assembly), [assembly]);
   const selectedNode = useMemo(
@@ -672,140 +865,179 @@ export default function Viewport3D() {
     [flatNodes, selectedNodeId]
   );
 
+  const handleObjectTypeChange = useCallback((type: MechanicalObjectType) => {
+    setActiveObjectType(type);
+    if (type === 'full-car') {
+      showAllNodes();
+      setExplodeAmount(0);
+      setCameraPreset('isometric');
+      setTimeout(() => triggerFitCamera(), 50);
+    } else if (type === 'engine') {
+      isolateNode('engine');
+      setCameraPreset('front');
+      setTimeout(() => triggerFitCamera(), 50);
+    } else if (type === 'transmission') {
+      isolateNode('transmission');
+      setCameraPreset('isometric');
+      setTimeout(() => triggerFitCamera(), 50);
+    } else if (type === 'battery-accelerator') {
+      isolateNode('electrical');
+      setCameraPreset('top');
+      setTimeout(() => triggerFitCamera(), 50);
+    } else if (type === 'radiator') {
+      isolateNode('engine-cooling');
+      setCameraPreset('front');
+      setTimeout(() => triggerFitCamera(), 50);
+    } else if (type === 'brakes') {
+      isolateNode('braking');
+      setCameraPreset('left');
+      setTimeout(() => triggerFitCamera(), 50);
+    } else if (type === 'suspension') {
+      isolateNode('suspension');
+      setCameraPreset('isometric');
+      setTimeout(() => triggerFitCamera(), 50);
+    }
+  }, [isolateNode, showAllNodes, setExplodeAmount, setCameraPreset, triggerFitCamera]);
+
   return (
     <div className="viewport-container" onContextMenu={e => e.preventDefault()}>
-      <Canvas
-        camera={{
-          position: [4.5, 3.5, 4.5],
-          fov: viewMode === 'perspective' ? 45 : 22,
-          near: 0.1,
-          far: 120,
-        }}
-        gl={{ antialias: true, alpha: false, localClippingEnabled: true }}
-        shadows
-        dpr={[1, 2]}
-        style={{ background: '#18181c' }}
-        orthographic={viewMode === 'orthographic'}
+      <ThreeDViewer
+        selectedObjectType={activeObjectType}
+        onObjectTypeChange={handleObjectTypeChange}
+        showSelector={true}
+        showResetButton={true}
+        backgroundColor="#18181c"
+        explodeAmount={explodeAmount}
+        renderMode={renderMode}
+        analysisOverlay={analysisOverlay}
+        showGrid={showGrid}
+        showAxes={showAxes}
+        viewMode={viewMode}
+        resetTrigger={resetCameraTrigger}
+        fitTrigger={fitCameraTrigger}
+        selectedEntityId={selectedNodeId}
+        onSelectEntity={(id) => selectNode(id)}
       >
-        <SceneContent />
-      </Canvas>
+        {/* Context Menu */}
+        <ViewportContextMenu />
 
-      {/* Context Menu */}
-      <ViewportContextMenu />
-
-      {/* Top Left Viewport Telemetry */}
-      <div className="viewport-overlay viewport-overlay--top-left">
-        <div className="viewport-info">
-          <div style={{ color: 'var(--text-accent)', fontWeight: 600 }}>
-            {viewMode.toUpperCase()} · {renderMode.toUpperCase()}
+        {/* Top Left Viewport Telemetry */}
+        <div className="viewport-overlay viewport-overlay--top-left">
+          <div className="viewport-info">
+            <div style={{ color: 'var(--text-accent)', fontWeight: 600 }}>
+              {viewMode.toUpperCase()} · {renderMode.toUpperCase()}
+            </div>
+            <div>ACTIVE TOOL: {activeTool.toUpperCase()}</div>
           </div>
-          <div>ACTIVE TOOL: {activeTool.toUpperCase()}</div>
         </div>
-      </div>
 
-      {/* Real CAD View Cube (Top Right) */}
-      <div className="viewport-overlay viewport-overlay--top-right">
-        <div className="viewport-cube" title="Standard Camera Viewpoints">
-          <div />
-          <button className="viewport-cube__btn" onClick={() => setCameraPreset('top')} title="Top View (Num 7)">TOP</button>
-          <div />
-          <button className="viewport-cube__btn" onClick={() => setCameraPreset('left')} title="Left View">L</button>
-          <button className="viewport-cube__btn" onClick={() => setCameraPreset('front')} title="Front View (Num 1)">FRT</button>
-          <button className="viewport-cube__btn" onClick={() => setCameraPreset('right')} title="Right View">R</button>
-          <div />
-          <button className="viewport-cube__btn" onClick={() => setCameraPreset('bottom')} title="Bottom View">BTM</button>
-          <div />
-        </div>
-        <div style={{ marginTop: 4, display: 'flex', justifyContent: 'center' }}>
-          <button
-            className="viewport-cube__btn"
-            style={{ width: '100%', fontSize: 9 }}
-            onClick={() => setCameraPreset('isometric')}
-            title="Isometric View (Num 0)"
-          >
-            ISO
-          </button>
-        </div>
-      </div>
-
-      {/* Real Measurement HUD Readout */}
-      {activeTool === 'measure' && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 14,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: 'rgba(20, 24, 32, 0.95)',
-            border: '1px solid #00ffcc',
-            borderRadius: 4,
-            padding: '8px 16px',
-            color: '#fff',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 12,
-            zIndex: 30,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 4,
-            boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
-            <span style={{ color: '#00ffcc', fontWeight: 600 }}>CAD MEASUREMENT TOOL</span>
+        {/* Real CAD View Cube (Top Right) */}
+        <div className="viewport-overlay viewport-overlay--top-right">
+          <div className="viewport-cube" title="Standard Camera Viewpoints">
+            <div />
+            <button className="viewport-cube__btn" onClick={() => setCameraPreset('top')} title="Top View (Num 7)">TOP</button>
+            <div />
+            <button className="viewport-cube__btn" onClick={() => setCameraPreset('left')} title="Left View">L</button>
+            <button className="viewport-cube__btn" onClick={() => setCameraPreset('front')} title="Front View (Num 1)">FRT</button>
+            <button className="viewport-cube__btn" onClick={() => setCameraPreset('right')} title="Right View">R</button>
+            <div />
+            <button className="viewport-cube__btn" onClick={() => setCameraPreset('bottom')} title="Bottom View">BTM</button>
+            <div />
+          </div>
+          <div style={{ marginTop: 4, display: 'flex', justifyContent: 'center' }}>
             <button
+              className="viewport-cube__btn"
+              style={{ width: '100%', fontSize: 9 }}
               onClick={() => {
-                clearMeasurement();
-                setActiveTool('select');
+                setCameraPreset('isometric');
+                triggerResetCamera();
               }}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: '#aaa',
-                cursor: 'pointer',
-                fontSize: 12,
-              }}
+              title="Isometric View (Num 0)"
             >
-              ✕ ESC
+              ISO
             </button>
           </div>
-          {measurePoints.length === 0 && (
-            <div style={{ color: '#aaa', fontSize: 11 }}>
-              Click Point A on any component to begin measurement
-            </div>
-          )}
-          {measurePoints.length === 1 && (
-            <div style={{ color: '#ffcc00', fontSize: 11 }}>
-              Point A set · Click Point B on destination component
-            </div>
-          )}
-          {measureData && (
-            <div style={{ marginTop: 2, display: 'flex', gap: 14, fontSize: 12 }}>
-              <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>
-                DISTANCE: {measureData.distance.toFixed(2)} mm
-              </span>
-              <span style={{ color: '#ddd' }}>
-                ΔX: {measureData.dx.toFixed(1)} mm
-              </span>
-              <span style={{ color: '#ddd' }}>
-                ΔY: {measureData.dy.toFixed(1)} mm
-              </span>
-              <span style={{ color: '#ddd' }}>
-                ΔZ: {measureData.dz.toFixed(1)} mm
-              </span>
-            </div>
-          )}
         </div>
-      )}
 
-      {/* Selected Component Floating Breadcrumb Indicator */}
-      {selectedNode && (
-        <div className="selection-indicator">
-          <span className="selection-indicator__path">{selectedNodePath.join(' / ')}</span>
-          <span className="selection-indicator__name">
-            {selectedNode.name} {selectedNode.partId ? `[${selectedNode.partId}]` : ''}
-          </span>
-        </div>
-      )}
+        {/* Real Measurement HUD Readout */}
+        {activeTool === 'measure' && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 50,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              background: 'rgba(20, 24, 32, 0.95)',
+              border: '1px solid #00ffcc',
+              borderRadius: 4,
+              padding: '8px 16px',
+              color: '#fff',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 12,
+              zIndex: 30,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+              <span style={{ color: '#00ffcc', fontWeight: 600 }}>CAD MEASUREMENT TOOL</span>
+              <button
+                onClick={() => {
+                  clearMeasurement();
+                  setActiveTool('select');
+                }}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#aaa',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                }}
+              >
+                ✕ ESC
+              </button>
+            </div>
+            {measurePoints.length === 0 && (
+              <div style={{ color: '#aaa', fontSize: 11 }}>
+                Click Point A on any component to begin measurement
+              </div>
+            )}
+            {measurePoints.length === 1 && (
+              <div style={{ color: '#ffcc00', fontSize: 11 }}>
+                Point A set · Click Point B on destination component
+              </div>
+            )}
+            {measureData && (
+              <div style={{ marginTop: 2, display: 'flex', gap: 14, fontSize: 12 }}>
+                <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>
+                  DISTANCE: {measureData.distance.toFixed(2)} mm
+                </span>
+                <span style={{ color: '#ddd' }}>
+                  ΔX: {measureData.dx.toFixed(1)} mm
+                </span>
+                <span style={{ color: '#ddd' }}>
+                  ΔY: {measureData.dy.toFixed(1)} mm
+                </span>
+                <span style={{ color: '#ddd' }}>
+                  ΔZ: {measureData.dz.toFixed(1)} mm
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Selected Component Floating Breadcrumb Indicator */}
+        {selectedNode && (
+          <div className="selection-indicator">
+            <span className="selection-indicator__path">{selectedNodePath.join(' / ')}</span>
+            <span className="selection-indicator__name">
+              {selectedNode.name} {selectedNode.partId ? `[${selectedNode.partId}]` : ''}
+            </span>
+          </div>
+        )}
+      </ThreeDViewer>
     </div>
   );
 }
